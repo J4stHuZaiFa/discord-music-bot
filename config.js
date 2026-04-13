@@ -2,32 +2,19 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 export const config = {
-  discord: {
-    token: process.env.DISCORD_TOKEN,
-    prefix: process.env.PREFIX || '!'
-  },
+  token: process.env.DISCORD_TOKEN,
+  prefix: process.env.PREFIX || '!',
   spotify: {
     clientId: process.env.SPOTIFY_CLIENT_ID,
-    clientSecret: process.env.SPOTIFY_CLIENT_SECRET
+    clientSecret: process.env.SPOTIFY_CLIENT_SECRET,
   },
-  genius: {
-    token: process.env.GENIUS_TOKEN
-  },
-  dj: {
-    roleId: process.env.DJ_ROLE_ID || null
-  }
+  genius: process.env.GENIUS_TOKEN,
+  djRoleId: process.env.DJ_ROLE_ID || null,
 };
 
 export function validateConfig() {
-  if (!config.discord.token) {
-    console.error('❌ DISCORD_TOKEN is not set in .env file');
-    return false;
-  }
-  if (!config.spotify.clientId || !config.spotify.clientSecret) {
-    console.warn('⚠️  Spotify credentials not set. Spotify features disabled.');
-  }
-  if (!config.genius.token) {
-    console.warn('⚠️  GENIUS_TOKEN not set. Lyrics feature disabled.');
-  }
+  if (!config.token) { console.error('❌ DISCORD_TOKEN missing in .env'); return false; }
+  if (!config.spotify.clientId) console.warn('⚠️  Spotify not configured — Spotify URLs disabled');
+  if (!config.genius) console.warn('⚠️  GENIUS_TOKEN not set — !lyrics disabled');
   return true;
 }
