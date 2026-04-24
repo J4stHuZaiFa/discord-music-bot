@@ -10,11 +10,13 @@ export const config = {
   },
   genius: process.env.GENIUS_TOKEN,
   djRoleId: process.env.DJ_ROLE_ID || null,
+  ytCookie: process.env.YT_COOKIE || null,
 };
 
 export function validateConfig() {
   if (!config.token) { console.error('❌ DISCORD_TOKEN missing in .env'); return false; }
-  if (!config.spotify.clientId) console.warn('⚠️  Spotify not configured — Spotify URLs disabled');
-  if (!config.genius) console.warn('⚠️  GENIUS_TOKEN not set — !lyrics disabled');
+  if (!config.spotify.clientId) console.warn('⚠️  Spotify not configured');
+  if (!config.genius) console.warn('⚠️  GENIUS_TOKEN not set');
+  if (!config.ytCookie) console.warn('⚠️  YT_COOKIE not set — YouTube may be limited');
   return true;
 }

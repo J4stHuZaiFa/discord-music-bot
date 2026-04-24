@@ -5,18 +5,40 @@ import {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   entersState,
-  NoSubscriberBehavior
+  NoSubscriberBehavior,
 } from '@discordjs/voice';
 import play from 'play-dl';
 import SpotifyWebApi from 'spotify-web-api-node';
 import { config } from './config.js';
 
-// ── Spotify Init ──────────────────────────────────────────────────────────────
+// ── Initialize play-dl ────────────────────────────────────────────────────────
+try {
+  const tokenConfig = {};
+
+  if (config.ytCookie) {
+    tokenConfig.youtube = { cookie: config.ytCookie };
+    console.log('✅ YouTube cookies loaded');
+  }
+
+  try {
+    const scId = await play.getFreeClientID();
+    tokenConfig.soundcloud = { client_id: scId };
+  } catch {}
+
+  if (Object.keys(tokenConfig).length > 0) {
+    await play.setToken(tokenConfig);
+  }
+  console.log('✅ play-dl initialized');
+} catch (e) {
+  console.warn('⚠️ play-dl init warning:', e.message);
+}
+
+// ── Spotify ───────────────────────────────────────────────────────────────────
 let spotifyApi = null;
 if (config.spotify.clientId && config.spotify.clientSecret) {
   spotifyApi = new SpotifyWebApi({
     clientId: config.spotify.clientId,
-    clientSecret: config.spotify.clientSecret
+    clientSecret: config.spotify.clientSecret,
   });
   try {
     const data = await spotifyApi.clientCredentialsGrant();
@@ -29,52 +51,105 @@ if (config.spotify.clientId && config.spotify.clientSecret) {
     }, (data.body.expires_in - 60) * 1000);
     console.log('✅ Spotify connected');
   } catch (e) {
-    console.warn('⚠️  Spotify failed:', e.message);
+    console.warn('⚠️ Spotify failed:', e.message);
     spotifyApi = null;
   }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function fmtDur(s) {
+  if (!s) return '0:00';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  return h > 0
+    ? `${h}:${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`
+    : `${m}:${sec.toString().padStart(2,'0')}`;
+}
+
+async function ytSearch(query) {
+  // Method 1: play-dl
+  try {
+    const res = await play.search(query, { limit: 5, source: { youtube: 'video' } });
+    const valid = res.find(r => r.url && r.durationInSec > 0 && !r.live);
+    if (valid) return { url: valid.url, title: valid.title, duration: fmtDur(valid.durationInSec), thumbnail: valid.thumbnails?.[0]?.url };
+  } catch (e) { console.warn('play-dl search failed:', e.message); }
+
+  // Method 2: youtube-sr
+  try {
+    const YT = (await import('youtube-sr')).default;
+    const res = await YT.search(query, { limit: 3, type: 'video' });
+    const valid = res.find(r => r.url && r.duration > 0);
+    if (valid) return { url: valid.url, title: valid.title, duration: fmtDur(Math.floor(valid.duration / 1000)), thumbnail: valid.thumbnail?.url };
+  } catch (e) { console.warn('youtube-sr failed:', e.message); }
+
+  return null;
+}
+
+async function createStream(url) {
+  // Method 1: play-dl quality 2
+  try {
+    const s = await play.stream(url, { discordPlayerCompatibility: true, quality: 2 });
+    console.log('✅ Stream via play-dl q2');
+    return { stream: s.stream, type: s.type };
+  } catch (e) { console.warn('play-dl q2 failed:', e.message); }
+
+  // Method 2: play-dl quality 0
+  try {
+    const s = await play.stream(url, { discordPlayerCompatibility: true, quality: 0 });
+    console.log('✅ Stream via play-dl q0');
+    return { stream: s.stream, type: s.type };
+  } catch (e) { console.warn('play-dl q0 failed:', e.message); }
+
+  // Method 3: miniget direct
+  try {
+    const info = await play.video_info(url);
+    const formats = (info.format || []).filter(f => f.mimeType?.includes('audio') && f.url);
+    for (const fmt of formats) {
+      try {
+        const miniget = (await import('miniget')).default;
+        const stream = miniget(fmt.url, { maxRedirects: 10 });
+        console.log('✅ Stream via miniget');
+        return { stream, type: 'arbitrary' };
+      } catch {}
+    }
+  } catch (e) { console.warn('miniget failed:', e.message); }
+
+  throw new Error('All stream methods failed');
+}
+
+// ── MusicPlayer ───────────────────────────────────────────────────────────────
 export class MusicPlayer {
   constructor(client, guildId) {
-    this.client    = client;
-    this.guildId   = guildId;
-    this.queue     = [];
-    this.currentTrack  = null;
-    this.currentIndex  = 0;
+    this.client = client;
+    this.guildId = guildId;
+    this.queue = [];
+    this.currentTrack = null;
+    this.currentIndex = 0;
     this.voiceConnection = null;
-    this.audioPlayer = createAudioPlayer({
-      behaviors: { noSubscriber: NoSubscriberBehavior.Pause }
-    });
-    this.isPlaying   = false;
-    this.isPaused    = false;
-    this.loopMode    = 'none'; // none | song | queue
-    this.volume      = 100;
-    this.autoplay    = false;
-    this.is247       = false;
-    this.djRoleId    = config.djRoleId || null;
+    this.audioPlayer = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
+    this.isPlaying = false;
+    this.isPaused = false;
+    this.loopMode = 'none';
+    this.volume = 100;
+    this.autoplay = false;
+    this.is247 = false;
+    this.djRoleId = config.djRoleId || null;
     this.textChannel = null;
-    this.idleTimer   = null;
+    this.idleTimer = null;
     this.playlistInfo = null;
     this.failedTracks = [];
-    this._resource   = null;
+    this._resource = null;
 
-    this.audioPlayer.on(AudioPlayerStatus.Idle, (oldState) => {
-      if (oldState.status !== AudioPlayerStatus.Idle) {
-        this._onTrackEnd();
-      }
+    this.audioPlayer.on(AudioPlayerStatus.Idle, (old) => {
+      if (old.status !== AudioPlayerStatus.Idle) this._onTrackEnd();
     });
-
     this.audioPlayer.on('error', (err) => {
       console.error('[Audio Error]', err.message);
       this._onTrackEnd(true);
     });
   }
 
-  // ── Internal ───────────────────────────────────────────────────────────────
   async _onTrackEnd(isError = false) {
-    if (this.loopMode === 'song' && !isError) {
-      return this.playNext();
-    }
+    if (this.loopMode === 'song' && !isError) return this.playNext();
     this.currentIndex++;
     if (this.currentIndex < this.queue.length) {
       this.currentTrack = this.queue[this.currentIndex];
@@ -85,9 +160,7 @@ export class MusicPlayer {
       this.currentTrack = this.queue[0];
       return this.playNext();
     }
-    if (this.autoplay && this.currentTrack) {
-      return this._doAutoplay();
-    }
+    if (this.autoplay && this.currentTrack) return this._doAutoplay();
     this.currentTrack = null;
     this.isPlaying = false;
     this._startIdleTimer();
@@ -95,37 +168,29 @@ export class MusicPlayer {
 
   async _doAutoplay() {
     try {
-      const query = `${this.currentTrack?.artist || ''} ${this.currentTrack?.originalTitle || this.currentTrack?.title || 'pop'} mix`;
-      const results = await play.search(query, { limit: 5 });
-      const pick = results.find(r => !this.queue.some(t => t.url === r.url));
-      if (pick) {
-        const track = {
-          url: pick.url, title: pick.title,
-          duration: this._fmtDur(pick.durationInSec),
-          thumbnail: pick.thumbnails?.[0]?.url,
-          requestedBy: { toString: () => '🤖 Autoplay' }
-        };
-        this.queue.push(track);
+      const q = `${this.currentTrack?.artist || ''} ${this.currentTrack?.originalTitle || this.currentTrack?.title || 'pop'} mix`;
+      const t = await ytSearch(q);
+      if (t && !this.queue.some(x => x.url === t.url)) {
+        t.requestedBy = { toString: () => '🤖 Autoplay' };
+        this.queue.push(t);
         this.currentIndex = this.queue.length - 1;
-        this.currentTrack = track;
+        this.currentTrack = t;
         await this.playNext();
-        this.textChannel?.send(`🤖 **Autoplay:** Now playing **${track.title}**`).catch(() => {});
-      } else {
-        this.isPlaying = false;
-        this._startIdleTimer();
+        this.textChannel?.send(`🤖 **Autoplay:** **${t.title}**`).catch(() => {});
+        return;
       }
-    } catch {
-      this.isPlaying = false;
-      this._startIdleTimer();
-    }
+    } catch {}
+    this.isPlaying = false;
+    this._startIdleTimer();
   }
 
   _startIdleTimer() {
+    // Always stay in VC if 24/7 is on
     if (this.is247) return;
     clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
       if (!this.isPlaying && this.voiceConnection) {
-        this.textChannel?.send('👋 Left voice channel due to inactivity.').catch(() => {});
+        this.textChannel?.send('👋 Left voice channel due to inactivity. Use `/247` to keep me here forever!').catch(() => {});
         this.voiceConnection.destroy();
         this.voiceConnection = null;
       }
@@ -137,37 +202,32 @@ export class MusicPlayer {
     this.idleTimer = null;
   }
 
-  // ── Connect ────────────────────────────────────────────────────────────────
-  async connect(voiceChannel) {
+  async connect(vc) {
     if (this.voiceConnection) {
       const s = this.voiceConnection.state?.status;
       if (s && s !== VoiceConnectionStatus.Destroyed) return this.voiceConnection;
     }
-
     this.voiceConnection = joinVoiceChannel({
-      channelId: voiceChannel.id,
-      guildId:   voiceChannel.guild.id,
-      adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+      channelId: vc.id,
+      guildId: vc.guild.id,
+      adapterCreator: vc.guild.voiceAdapterCreator,
       selfDeaf: true,
     });
-
     this.voiceConnection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
         await Promise.race([
-          entersState(this.voiceConnection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(this.voiceConnection, VoiceConnectionStatus.Connecting, 5_000),
+          entersState(this.voiceConnection, VoiceConnectionStatus.Signalling, 5000),
+          entersState(this.voiceConnection, VoiceConnectionStatus.Connecting, 5000),
         ]);
       } catch {
         this.voiceConnection.destroy();
         this.voiceConnection = null;
       }
     });
-
     this.voiceConnection.subscribe(this.audioPlayer);
     return this.voiceConnection;
   }
 
-  // ── Queue ──────────────────────────────────────────────────────────────────
   async addToQueue(query, user) {
     const tracks = await this._search(query);
     if (!tracks?.length) throw new Error('No results found for that query.');
@@ -179,31 +239,26 @@ export class MusicPlayer {
   async _search(query) {
     if (query.includes('spotify.com/playlist/')) return this._spotifyPlaylist(query);
     if (query.includes('spotify.com/track/'))    return this._spotifyTrack(query);
-    if (query.includes('spotify.com/album/'))     return this._spotifyAlbum(query);
-    if (query.includes('youtube.com/playlist'))   return this._ytPlaylist(query);
+    if (query.includes('spotify.com/album/'))    return this._spotifyAlbum(query);
     if (query.includes('youtube.com/') || query.includes('youtu.be/')) return this._ytTrack(query);
-    return this._ytSearch(query);
-  }
-
-  async _ytSearch(query) {
-    const res = await play.search(query, { limit: 1 });
-    if (!res.length) return [];
-    return [{ url: res[0].url, title: res[0].title, duration: this._fmtDur(res[0].durationInSec), thumbnail: res[0].thumbnails?.[0]?.url }];
+    const t = await ytSearch(query);
+    return t ? [t] : [];
   }
 
   async _ytTrack(url) {
-    const info = await play.video_info(url);
-    return [{ url: info.video_details.url, title: info.video_details.title, duration: this._fmtDur(info.video_details.durationInSec), thumbnail: info.video_details.thumbnails?.[0]?.url }];
-  }
-
-  async _ytPlaylist(url) {
-    const pl = await play.playlist_info(url, { incomplete: true });
-    const vids = await pl.all_videos();
-    return vids.map(v => ({ url: v.url, title: v.title, duration: this._fmtDur(v.durationInSec), thumbnail: v.thumbnails?.[0]?.url }));
+    try {
+      const info = await play.video_info(url);
+      return [{
+        url: info.video_details.url,
+        title: info.video_details.title,
+        duration: fmtDur(info.video_details.durationInSec),
+        thumbnail: info.video_details.thumbnails?.[0]?.url
+      }];
+    } catch { return []; }
   }
 
   async _spotifyPlaylist(url) {
-    if (!spotifyApi) throw new Error('Spotify not configured. Add credentials to .env');
+    if (!spotifyApi) throw new Error('Spotify not configured. Add SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET to .env');
     const id = url.match(/playlist\/([a-zA-Z0-9]+)/)?.[1];
     const pl = await spotifyApi.getPlaylist(id);
     this.playlistInfo = { name: pl.body.name, image: pl.body.images?.[0]?.url };
@@ -212,7 +267,7 @@ export class MusicPlayer {
       if (!item.track) continue;
       const { name, artists, album } = item.track;
       const artist = artists[0]?.name || '';
-      const yt = await this._ytOne(`${name} ${artist}`);
+      const yt = await ytSearch(`${name} ${artist}`);
       if (yt) tracks.push({ ...yt, originalTitle: name, artist, title: `${name} - ${artist}`, spotifyThumbnail: album.images?.[0]?.url });
       else this.failedTracks.push(`${name} - ${artist}`);
     }
@@ -220,35 +275,26 @@ export class MusicPlayer {
   }
 
   async _spotifyTrack(url) {
-    if (!spotifyApi) throw new Error('Spotify not configured');
+    if (!spotifyApi) throw new Error('Spotify not configured.');
     const id = url.match(/track\/([a-zA-Z0-9]+)/)?.[1];
     const t = await spotifyApi.getTrack(id);
-    const yt = await this._ytOne(`${t.body.name} ${t.body.artists[0].name}`);
-    if (!yt) throw new Error('Could not find this track on YouTube');
+    const yt = await ytSearch(`${t.body.name} ${t.body.artists[0].name}`);
+    if (!yt) throw new Error('Could not find this track on YouTube.');
     return [{ ...yt, originalTitle: t.body.name, artist: t.body.artists[0].name }];
   }
 
   async _spotifyAlbum(url) {
-    if (!spotifyApi) throw new Error('Spotify not configured');
+    if (!spotifyApi) throw new Error('Spotify not configured.');
     const id = url.match(/album\/([a-zA-Z0-9]+)/)?.[1];
     const album = await spotifyApi.getAlbum(id);
     const tracks = [];
     for (const item of album.body.tracks.items) {
-      const yt = await this._ytOne(`${item.name} ${item.artists[0].name}`);
+      const yt = await ytSearch(`${item.name} ${item.artists[0].name}`);
       if (yt) tracks.push({ ...yt, originalTitle: item.name, artist: item.artists[0].name });
     }
     return tracks;
   }
 
-  async _ytOne(query) {
-    try {
-      const res = await play.search(query, { limit: 1 });
-      if (!res.length) return null;
-      return { url: res[0].url, title: res[0].title, duration: this._fmtDur(res[0].durationInSec), thumbnail: res[0].thumbnails?.[0]?.url };
-    } catch { return null; }
-  }
-
-  // ── Playback ───────────────────────────────────────────────────────────────
   async playNext() {
     if (this.currentIndex >= this.queue.length) {
       this.currentTrack = null;
@@ -256,31 +302,24 @@ export class MusicPlayer {
       this._startIdleTimer();
       return;
     }
-
     this.currentTrack = this.queue[this.currentIndex];
     this.isPlaying = true;
-    this.isPaused  = false;
+    this.isPaused = false;
     this._clearIdleTimer();
-
+    console.log(`▶️ Playing: ${this.currentTrack.title}`);
     try {
-      console.log(`▶️  Playing: ${this.currentTrack.title}`);
-      const stream = await play.stream(this.currentTrack.url, {
-        discordPlayerCompatibility: true,
-      });
-      const resource = createAudioResource(stream.stream, {
-        inputType: stream.type,
-        inlineVolume: true,
-      });
+      const { stream, type } = await createStream(this.currentTrack.url);
+      const resource = createAudioResource(stream, { inputType: type, inlineVolume: true });
       resource.volume?.setVolumeLogarithmic(this.volume / 100);
       this._resource = resource;
       this.audioPlayer.play(resource);
     } catch (err) {
-      console.error(`❌  Stream failed: ${err.message}`);
+      console.error(`❌ Stream failed: ${err.message}`);
+      this.textChannel?.send(`❌ Could not play **${this.currentTrack.title}** — skipping...`).catch(() => {});
       await this._onTrackEnd(true);
     }
   }
 
-  // ── Controls ───────────────────────────────────────────────────────────────
   pause()  { if (this.isPlaying && !this.isPaused)  { this.audioPlayer.pause();   this.isPaused = true;  return true; } return false; }
   resume() { if (this.isPaused)                      { this.audioPlayer.unpause(); this.isPaused = false; return true; } return false; }
 
@@ -307,10 +346,8 @@ export class MusicPlayer {
   }
 
   setLoop(mode) {
-    const valid = ['none', 'song', 'queue'];
-    if (!valid.includes(mode)) return false;
-    this.loopMode = mode;
-    return true;
+    if (!['none', 'song', 'queue'].includes(mode)) return false;
+    this.loopMode = mode; return true;
   }
 
   shuffle() {
@@ -335,30 +372,19 @@ export class MusicPlayer {
 
   seek(seconds) {
     if (!this.currentTrack) return false;
-    this._seekPlay(this.currentTrack, seconds);
+    play.stream(this.currentTrack.url, { seek: seconds, discordPlayerCompatibility: true })
+      .then(s => {
+        const resource = createAudioResource(s.stream, { inputType: s.type, inlineVolume: true });
+        resource.volume?.setVolumeLogarithmic(this.volume / 100);
+        this._resource = resource;
+        this.audioPlayer.play(resource);
+      }).catch(e => console.error('Seek error:', e.message));
     return true;
-  }
-
-  async _seekPlay(track, seconds) {
-    try {
-      const stream = await play.stream(track.url, { seek: seconds, discordPlayerCompatibility: true });
-      const resource = createAudioResource(stream.stream, { inputType: stream.type, inlineVolume: true });
-      resource.volume?.setVolumeLogarithmic(this.volume / 100);
-      this._resource = resource;
-      this.audioPlayer.play(resource);
-    } catch (err) { console.error('Seek error:', err.message); }
   }
 
   isDJ(member) {
     if (!this.djRoleId) return true;
     return member.roles.cache.has(this.djRoleId) || member.permissions.has('Administrator');
-  }
-
-  _fmtDur(s) {
-    if (!s) return '0:00';
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
-    if (h > 0) return `${h}:${m.toString().padStart(2,'0')}:${sec.toString().padStart(2,'0')}`;
-    return `${m}:${sec.toString().padStart(2,'0')}`;
   }
 
   getQueue() {

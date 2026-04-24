@@ -3,10 +3,8 @@ import { config, validateConfig } from './config.js';
 import { MusicPlayer } from './player.js';
 import { slashCommands } from './slashCommands.js';
 import {
-  nowPlayingEmbed, controlButtons,
-  queueEmbed, queueButtons,
-  helpEmbed, loadingEmbed,
-  successEmbed, errorEmbed, infoEmbed,
+  nowPlayingEmbed, controlButtons, queueEmbed, queueButtons,
+  helpEmbed, loadingEmbed, successEmbed, errorEmbed, infoEmbed,
   addedEmbed, playlistLoadedEmbed
 } from './embeds.js';
 
@@ -27,37 +25,31 @@ const getPlayer = (guildId) => {
   return client.players.get(guildId);
 };
 
-// ── Command Logic ─────────────────────────────────────────────────────────────
+// ── Command Handler ───────────────────────────────────────────────────────────
 async function run(name, args, guild, member, channel, reply, followUp) {
   const player = getPlayer(guild.id);
   player.textChannel = channel;
 
   switch (name) {
-
     case 'play': case 'p': {
       const query = args.join(' ');
       if (!query) return reply({ embeds: [errorEmbed('Please provide a song name or URL!')], flags: 64 });
       const vc = member?.voice?.channel;
-      if (!vc) return reply({ embeds: [errorEmbed('Join a voice channel first!')], flags: 64 });
-
-      const isLong = query.includes('spotify.com/playlist') || query.includes('youtube.com/playlist');
+      if (!vc) return reply({ embeds: [errorEmbed('You need to join a voice channel first!')], flags: 64 });
+      const isPlaylist = query.includes('playlist');
       await reply({ embeds: [loadingEmbed(query.length > 60 ? query.slice(0, 60) + '...' : query)] });
-
       try {
         const before = player.queue.length;
         const tracks = await player.addToQueue(query, member.user);
-        if (!tracks.length) return followUp({ embeds: [errorEmbed('No results found!')] });
-
+        if (!tracks.length) return followUp({ embeds: [errorEmbed('No results found! Try a different search.')] });
         await player.connect(vc);
-
         const wasEmpty = before === 0;
         if (wasEmpty) {
           player.currentIndex = 0;
           player.currentTrack = player.queue[0];
           await player.playNext();
         }
-
-        if (isLong) {
+        if (isPlaylist) {
           await followUp({ embeds: [playlistLoadedEmbed(player.playlistInfo?.name || query, tracks.length, player.failedTracks.length)] });
           if (wasEmpty) await channel.send({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
         } else if (wasEmpty) {
@@ -74,8 +66,8 @@ async function run(name, args, guild, member, channel, reply, followUp) {
 
     case 'pause': {
       if (!player.isDJ(member)) return reply({ embeds: [errorEmbed('You need the DJ role!')], flags: 64 });
-      if (player.pause()) return reply({ embeds: [successEmbed('Paused', '⏸️ Music has been paused.')] });
-      return reply({ embeds: [errorEmbed('Nothing is playing or already paused!')] });
+      if (player.pause()) return reply({ embeds: [successEmbed('Paused', '⏸️ Music paused.')] });
+      return reply({ embeds: [errorEmbed('Nothing is playing!')] });
     }
 
     case 'resume': {
@@ -121,7 +113,7 @@ async function run(name, args, guild, member, channel, reply, followUp) {
       const cur = player.currentTrack;
       player.queue = cur ? [cur] : [];
       player.currentIndex = 0;
-      return reply({ embeds: [successEmbed('Cleared', '🗑️ Queue has been cleared!')] });
+      return reply({ embeds: [successEmbed('Cleared', '🗑️ Queue cleared!')] });
     }
 
     case 'volume': case 'vol': {
@@ -139,7 +131,7 @@ async function run(name, args, guild, member, channel, reply, followUp) {
       const mode = args[0]?.toLowerCase() || cycle[player.loopMode];
       if (!['none', 'song', 'queue'].includes(mode)) return reply({ embeds: [errorEmbed('Use: none, song, or queue')] });
       player.setLoop(mode);
-      const labels = { none: '➡️ Loop is **off**', song: '🔂 Looping the **current song**', queue: '🔁 Looping the **entire queue**' };
+      const labels = { none: '➡️ Loop is **off**', song: '🔂 Looping **current song**', queue: '🔁 Looping **entire queue**' };
       return reply({ embeds: [successEmbed('Loop', labels[mode])] });
     }
 
@@ -153,7 +145,7 @@ async function run(name, args, guild, member, channel, reply, followUp) {
       if (isNaN(seconds) || seconds < 0) return reply({ embeds: [errorEmbed('Use format: `1:30` or `90`')] });
       player.seek(seconds);
       const m = Math.floor(seconds / 60), s = seconds % 60;
-      return reply({ embeds: [successEmbed('Seeked', `⏩ Jumped to **${m}:${s.toString().padStart(2, '0')}**`)] });
+      return reply({ embeds: [successEmbed('Seeked', `⏩ Jumped to **${m}:${s.toString().padStart(2,'0')}**`)] });
     }
 
     case 'remove': case 'rm': {
@@ -170,29 +162,29 @@ async function run(name, args, guild, member, channel, reply, followUp) {
       const levels = { off: null, low: 'bass=g=10', medium: 'bass=g=20', high: 'bass=g=30', extreme: 'bass=g=40' };
       const level = args[0]?.toLowerCase() || (player.currentFilter?.includes('bass') ? 'off' : 'medium');
       player.currentFilter = levels[level] ?? null;
-      return reply({ embeds: [successEmbed('Bass Boost', `🔊 Bass boost set to **${level}**`)] });
+      return reply({ embeds: [successEmbed('Bass Boost', `🔊 Bass boost: **${level}**`)] });
     }
 
     case 'filter': {
       if (!player.isDJ(member)) return reply({ embeds: [errorEmbed('You need the DJ role!')], flags: 64 });
       const FILTERS = { nightcore: 'aresample=48000,asetrate=48000*1.25', vaporwave: 'aresample=48000,asetrate=48000*0.8', '8d': 'apulsator=hz=0.08', echo: 'aecho=0.8:0.88:60:0.4', karaoke: 'pan=stereo|c0=c0|c1=c1', treble: 'treble=g=5', loud: 'volume=4.0', none: null };
-      const name = args[0]?.toLowerCase();
-      if (!name || !FILTERS.hasOwnProperty(name)) return reply({ embeds: [errorEmbed('Available: nightcore, vaporwave, 8d, echo, karaoke, treble, loud, none')] });
-      player.currentFilter = FILTERS[name];
-      return reply({ embeds: [successEmbed('Filter', `🎛️ Filter set to **${name}**\n> Skip or restart song to hear the effect.`)] });
+      const fname = args[0]?.toLowerCase();
+      if (!fname || !FILTERS.hasOwnProperty(fname)) return reply({ embeds: [errorEmbed('Available: nightcore, vaporwave, 8d, echo, karaoke, treble, loud, none')] });
+      player.currentFilter = FILTERS[fname];
+      return reply({ embeds: [successEmbed('Filter', `🎛️ Filter: **${fname}**\n> Skip to hear it!`)] });
     }
 
     case 'autoplay': case 'ap': {
       if (!player.isDJ(member)) return reply({ embeds: [errorEmbed('You need the DJ role!')], flags: 64 });
       player.autoplay = !player.autoplay;
-      return reply({ embeds: [successEmbed('Autoplay', player.autoplay ? '🤖 Autoplay **enabled** — I\'ll keep the music going!' : '🤖 Autoplay **disabled**.')] });
+      return reply({ embeds: [successEmbed('Autoplay', player.autoplay ? '🤖 Autoplay **enabled**!' : '🤖 Autoplay **disabled**.')] });
     }
 
     case 'lyrics': case 'ly': {
       const query = args.join(' ') || player.currentTrack?.originalTitle || player.currentTrack?.title;
-      if (!query) return reply({ embeds: [errorEmbed('Provide a song name or have a song playing!')] });
+      if (!query) return reply({ embeds: [errorEmbed('Provide a song name or have something playing!')] });
       if (!config.genius) return reply({ embeds: [errorEmbed('Add `GENIUS_TOKEN` to your `.env` file!\nGet free token at genius.com/api-clients')] });
-      await reply({ embeds: [loadingEmbed(`Searching lyrics for: ${query}`)] });
+      await reply({ embeds: [loadingEmbed(`Searching lyrics: ${query}`)] });
       try {
         const res = await fetch(`https://api.genius.com/search?q=${encodeURIComponent(query)}`, { headers: { Authorization: `Bearer ${config.genius}` } });
         const data = await res.json();
@@ -201,13 +193,12 @@ async function run(name, args, guild, member, channel, reply, followUp) {
         const pageRes = await fetch(hit.url);
         const html = await pageRes.text();
         const blocks = html.match(/data-lyrics-container="true"[^>]*>([\s\S]*?)<\/div>/g);
-        let lyrics = blocks ? blocks.map(b => b.replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/\[/g,'\n[')).join('\n').replace(/&amp;/g,'&').trim() : 'Lyrics not available.';
+        let lyrics = blocks ? blocks.map(b => b.replace(/<br\s*\/?>/gi,'\n').replace(/<[^>]+>/g,'').replace(/\[/g,'\n[')).join('\n').replace(/&amp;/g,'&').trim() : 'Lyrics not found.';
         if (lyrics.length > 4000) lyrics = lyrics.slice(0, 4000) + '\n...';
         const { EmbedBuilder } = await import('discord.js');
         await followUp({ embeds: [new EmbedBuilder().setColor(0xFFFF64).setTitle(`🎤 ${hit.full_title}`).setDescription(lyrics).setURL(hit.url).setThumbnail(hit.song_art_image_thumbnail_url).setFooter({ text: 'Powered by Genius' }).setTimestamp()] });
       } catch (err) {
-        console.error('Lyrics error:', err);
-        await followUp({ embeds: [errorEmbed('Failed to fetch lyrics. Try again later.')] });
+        await followUp({ embeds: [errorEmbed('Failed to fetch lyrics.')] });
       }
       break;
     }
@@ -215,7 +206,12 @@ async function run(name, args, guild, member, channel, reply, followUp) {
     case '247': {
       if (!member.permissions.has('Administrator') && !player.isDJ(member)) return reply({ embeds: [errorEmbed('Admin or DJ only!')], flags: 64 });
       player.is247 = !player.is247;
-      return reply({ embeds: [successEmbed('24/7 Mode', player.is247 ? '🕐 24/7 mode **ON** — I\'ll stay in voice forever!' : '🕐 24/7 mode **OFF** — I\'ll leave after 5 min of inactivity.')] });
+      if (player.is247) {
+        player._clearIdleTimer();
+        return reply({ embeds: [successEmbed('24/7 Mode ON', '🕐 I will **stay in the voice channel forever** — even when not playing!')] });
+      } else {
+        return reply({ embeds: [successEmbed('24/7 Mode OFF', '🕐 I will leave after **5 minutes** of inactivity.')] });
+      }
     }
 
     case 'dj': {
@@ -235,12 +231,12 @@ async function run(name, args, guild, member, channel, reply, followUp) {
 
 // ── Ready ─────────────────────────────────────────────────────────────────────
 client.once('ready', async () => {
-  console.log(`\n🎵 Music Bot PRO v4 is online!`);
+  console.log(`\n🎵 Music Bot PRO v5 online!`);
   console.log(`📝 Logged in as: ${client.user.tag}`);
   try {
     const rest = new REST({ version: '10' }).setToken(config.token);
     await rest.put(Routes.applicationCommands(client.user.id), { body: slashCommands });
-    console.log('✅ Slash commands registered globally!');
+    console.log('✅ Slash commands registered!');
   } catch (err) { console.error('❌ Slash commands failed:', err.message); }
   client.user.setActivity('/play | Music Bot PRO', { type: 2 });
   console.log('✅ Ready!\n');
@@ -257,13 +253,14 @@ client.on('interactionCreate', async (interaction) => {
     if (name === 'dj') { const sub = interaction.options.getSubcommand(); const role = interaction.options.getRole?.('role'); args = [sub, role ? `<@&${role.id}>` : '']; }
     else if (str) args = [str];
     else if (num !== null && num !== undefined) args = [String(num)];
+
     try {
       await run(name, args, interaction.guild, interaction.member, interaction.channel,
         o => interaction.reply(o), o => interaction.followUp(o));
     } catch (err) {
-      console.error('[Slash]', err);
+      console.error('[Slash Error]', err);
       const e = { embeds: [errorEmbed(err.message)], flags: 64 };
-      interaction.replied ? interaction.followUp(e).catch(() => {}) : interaction.reply(e).catch(() => {});
+      interaction.replied ? interaction.followUp(e).catch(()=>{}) : interaction.reply(e).catch(()=>{});
     }
   }
 
@@ -277,46 +274,36 @@ client.on('interactionCreate', async (interaction) => {
       if (id === 'btn_pause') {
         player.isPaused ? player.resume() : player.pause();
         await interaction.update({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
-
       } else if (id === 'btn_skip') {
         const title = player.currentTrack?.originalTitle || player.currentTrack?.title || 'Unknown';
         player.skip();
         await interaction.reply({ embeds: [successEmbed('Skipped', `⏭️ Skipped **${title}**`)], flags: 64 });
-
       } else if (id === 'btn_stop') {
         player.stop();
-        await interaction.update({ embeds: [successEmbed('Stopped', '⏹️ Music stopped and queue cleared.')], components: [] });
-
+        await interaction.update({ embeds: [successEmbed('Stopped', '⏹️ Music stopped.')], components: [] });
       } else if (id === 'btn_loop') {
         const cycle = { none: 'song', song: 'queue', queue: 'none' };
         player.setLoop(cycle[player.loopMode]);
         await interaction.update({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
-
       } else if (id === 'btn_shuffle') {
         player.shuffle();
         await interaction.reply({ embeds: [successEmbed('Shuffled', '🔀 Queue shuffled!')], flags: 64 });
-
       } else if (id === 'btn_volup') {
         player.setVolume(Math.min(200, player.volume + 10));
         await interaction.update({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
-
       } else if (id === 'btn_voldown') {
         player.setVolume(Math.max(0, player.volume - 10));
         await interaction.update({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
-
       } else if (id === 'btn_autoplay') {
         player.autoplay = !player.autoplay;
         await interaction.update({ embeds: [nowPlayingEmbed(player)], components: controlButtons(player) });
-
       } else if (id === 'btn_queue') {
         const q = player.getQueue();
         if (!q.current && !q.total) return interaction.reply({ embeds: [errorEmbed('Queue is empty!')], flags: 64 });
         await interaction.reply({ embeds: [queueEmbed(player, 0)], components: [queueButtons(player, 0)], flags: 64 });
-
       } else if (id === 'btn_prev') {
         if (player.currentIndex > 0) { player.currentIndex -= 2; player.audioPlayer.stop(); }
         await interaction.reply({ embeds: [successEmbed('Previous', '⏮️ Going back!')], flags: 64 });
-
       } else if (id === 'btn_qprev' || id === 'btn_qnext') {
         const match = interaction.message.embeds[0]?.footer?.text?.match(/Page (\d+)/);
         let page = match ? parseInt(match[1]) - 1 : 0;
@@ -324,8 +311,8 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.update({ embeds: [queueEmbed(player, page)], components: [queueButtons(player, page)] });
       }
     } catch (err) {
-      console.error('[Button]', err);
-      interaction.replied ? null : await interaction.reply({ embeds: [errorEmbed(err.message)], flags: 64 }).catch(() => {});
+      console.error('[Button Error]', err);
+      interaction.replied ? null : await interaction.reply({ embeds: [errorEmbed(err.message)], flags: 64 }).catch(()=>{});
     }
   }
 });
@@ -342,14 +329,13 @@ client.on('messageCreate', async (message) => {
     await run(name, args, message.guild, message.member, message.channel,
       o => message.reply(o), o => message.channel.send(o));
   } catch (err) {
-    message.reply({ embeds: [errorEmbed(err.message)] }).catch(() => {});
+    message.reply({ embeds: [errorEmbed(err.message)] }).catch(()=>{});
   }
 });
 
-// ── Error Handling ────────────────────────────────────────────────────────────
 client.on('error', err => console.error('[Client]', err));
 process.on('unhandledRejection', err => console.error('[Unhandled]', err));
 process.on('uncaughtException', err => console.error('[Uncaught]', err));
-process.on('SIGINT', () => { console.log('\n👋 Shutting down...'); client.destroy(); process.exit(0); });
+process.on('SIGINT', () => { client.destroy(); process.exit(0); });
 
 client.login(config.token);

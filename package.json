@@ -1,24 +1,22 @@
 {
   "name": "discord-music-bot-premium",
-  "version": "4.0.0",
-  "description": "Premium Discord Music Bot",
+  "version": "5.0.0",
   "main": "index.js",
   "type": "module",
-  "scripts": {
-    "start": "node index.js",
-    "pm2": "pm2 start index.js --name music-bot"
-  },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
     "discord.js": "^14.14.1",
     "@discordjs/rest": "^2.3.0",
     "@discordjs/voice": "^0.16.1",
-    "@discordjs/opus": "^0.9.0",
+    "opusscript": "^0.0.8",
     "discord-api-types": "^0.37.83",
     "play-dl": "^1.9.7",
     "ffmpeg-static": "^5.2.0",
     "spotify-web-api-node": "^5.0.2",
     "libsodium-wrappers": "^0.7.13",
     "dotenv": "^16.4.5",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "youtube-sr": "^4.3.11",
+    "miniget": "^4.2.3"
   }
 }
